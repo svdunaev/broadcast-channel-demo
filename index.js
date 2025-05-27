@@ -1,56 +1,145 @@
 class ReadingProgressTracker {
-	constructor() {
-		this.progressBar = document.getElementById('progressBar')
-		this.progressInfo = document.getElementById('progressInfo')
+  constructor() {
+    this.progressBar = document.getElementById("progressBar");
+    this.progressInfo = document.getElementById("progressInfo");
+    this.syncIndicator = document.getElementById("syncIndicator");
 
-		this.init()
-	}
+    this.channel = new BroadcastChannel("reading-progress-sync");
+    this.isUpdatingFromSync = false;
+    this.lastSyncTime = 0;
+    this.syncTimeout = null;
 
-	init() {
-		//update progress on scroll
-		window.addEventListener('scroll', () => this.updateProgress())
+    this.init();
+  }
 
-		//update progress on resize
-		window.addEventListener('resize', () => this.updateProgress())
+  init() {
+    window.addEventListener("scroll", () => this.updateProgress());
 
-		//initial progress calculation
-		this.updateProgress()
-	}
+    window.addEventListener("resize", () => this.updateProgress());
 
-	updateProgress() {
-		const windowHeight = window.innerHeight
-		const documentHeight = document.documentElement.scrollHeight
-		const scrollTop = window.scrollY
+    this.channel.addEventListener("message", (event) =>
+      this.handleSyncMessage(event)
+    );
 
-		//calculate how much of document has been scrolled
-		const scrollableHeight = documentHeight - windowHeight
-		const scrollPercentage = scrollableHeight > 0 ? (scrollTop / scrollableHeight) * 100 : 0;
+    window.addEventListener("beforeunload", () => this.cleanup());
 
-		const clampedPercentage = Math.min(Math.max(scrollPercentage, 0), 100)
+    this.updateProgress();
+  }
 
+  updateProgress(fromSync = false) {
+    const windowHeight = window.innerHeight;
+    const documentHeight = document.documentElement.scrollHeight;
+    const scrollTop = window.scrollY;
 
-		//update progress bar
-		this.progressBar.style.width = `${clampedPercentage}%`
+    const scrollableHeight = documentHeight - windowHeight;
+    const scrollPercentage =
+      scrollableHeight > 0 ? (scrollTop / scrollableHeight) * 100 : 0;
 
-		//update progress info
-		const roundedPercentage = Math.round(clampedPercentage)
-		const remainingPercentage = 100 - roundedPercentage
+    const clampedPercentage = Math.min(Math.max(scrollPercentage, 0), 100);
 
-		if(roundedPercentage === 100) { 
-			this.progressInfo.textContent = 'Complete! 🎉'
-		} else {
-			this.progressInfo.textContent = `${roundedPercentage}% Complete (${remainingPercentage}% remaining)`
-		}
+    this.progressBar.style.width = `${clampedPercentage}%`;
 
-		//add some visual feedback when nearing completion
-		if(clampedPercentage > 90) {
-			this.progressBar.style.boxShadow = '0 0 15px rgba(102, 126, 234, 0.8)'
-		} else {
-			this.progressBar.style.boxShadow = '0 0 10px rgba(102, 126, 234, 0.5)';
-		}
-	}
-} 
+    const roundedPercentage = Math.round(clampedPercentage);
+    const remainingPercentage = 100 - roundedPercentage;
 
-document.addEventListener('DOMContentLoaded', () => {
-	new ReadingProgressTracker()
-})
+    if (roundedPercentage === 100) {
+      this.progressInfo.textContent = "Complete! 🎉";
+    } else {
+      this.progressInfo.textContent = `${roundedPercentage}% Complete (${remainingPercentage}% remaining)`;
+    }
+
+    if (clampedPercentage > 90) {
+      this.progressBar.style.boxShadow = "0 0 15px rgba(102, 126, 234, 0.8)";
+    } else {
+      this.progressBar.style.boxShadow = "0 0 10px rgba(102, 126, 234, 0.5)";
+    }
+
+    if (!fromSync) {
+      this.broadcastProgress(clampedPercentage, scrollTop);
+    }
+  }
+
+  broadcastProgress(percentage, scrollPosition) {
+    const now = Date.now();
+
+    if (now - this.lastSyncTime < 100) {
+      return;
+    }
+
+    this.lastSyncTime = now;
+
+    this.channel.postMessage({
+      type: "PROGRESS_UPDATE",
+      data: {
+        percentage: percentage,
+        scrollPosition: scrollPosition,
+        timestamp: now,
+      },
+    });
+
+    this.showSyncIndicator("Syncing...", "sync-out");
+  }
+
+  handleSyncMessage(event) {
+    if (event.data.type === "PROGRESS_UPDATE") {
+      const { percentage, scrollPosition, timestamp } = event.data.data;
+
+      // Only sync if the other tab's progress is ahead of ours
+      const currentScrollPercentage = this.getCurrentScrollPercentage();
+
+      if (percentage > currentScrollPercentage) {
+        this.syncToPosition(scrollPosition, percentage);
+        this.showSyncIndicator("Synced from other tab", "synced-from-other");
+      }
+    }
+  }
+
+  getCurrentScrollPercentage() {
+    const windowHeight = window.innerHeight;
+    const documentHeight = document.documentElement.scrollHeight;
+    const scrollTop = window.scrollY;
+    const scrollableHeight = documentHeight - windowHeight;
+
+    return scrollableHeight > 0 ? (scrollTop / scrollableHeight) * 100 : 0;
+  }
+
+  syncToPosition(scrollPosition) {
+    this.isUpdatingFromSync = true;
+
+    window.scrollTo({
+      top: scrollPosition,
+      behavior: "smooth",
+    });
+
+    setTimeout(() => {
+      this.updateProgress(true);
+      this.isUpdatingFromSync = false;
+    }, 100);
+  }
+
+  showSyncIndicator(message, className = "") {
+    this.syncIndicator.textContent = message;
+    this.syncIndicator.className = `sync-indicator show ${className}`;
+
+    if (this.syncTimeout) {
+      clearTimeout(this.syncTimeout);
+    }
+
+    this.syncTimeout = setTimeout(() => {
+      this.syncIndicator.classList.remove("show");
+    }, 2000);
+  }
+
+  cleanup() {
+    this.channel.close();
+
+    if (this.syncTimeout) {
+      clearTimeout(this.syncTimeout);
+    }
+  }
+}
+
+// Initialize when DOM is loaded
+document.addEventListener("DOMContentLoaded", () => {
+  new ReadingProgressTracker();
+});
